@@ -52,7 +52,7 @@ log_posterior <- function(betas, X, y, prior_sd=5) {
 
 
 ```{r}
-run_mcmc <- function(X, y, n_iter=5000, prior_sd=5, prop_sd=0.01) {
+run_mcmc <- function(X, y, n_iter=10000, prior_sd=5, prop_sd=0.01) {
   # X: design matrix
   # y: response vector (0/1)
   # n_iter: number of MCMC iterations
