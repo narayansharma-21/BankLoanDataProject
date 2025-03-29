@@ -1,0 +1,122 @@
+---
+title: "loan_analysis"
+author: "Joshua Yu"
+date: "2025-03-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(123) # for reproducibility
+```
+
+```{r}
+loan_data <- read.csv("../loan_data.csv", stringsAsFactors = FALSE)
+
+# preprocess columns needed
+numeric_cols <- c("credit_score", "person_income", "loan_amnt", "loan_percent_income")
+loan_data[ , numeric_cols] <- scale(loan_data[ , numeric_cols])
+
+y <- loan_data$loan_status
+
+# intercept, credit_score, person_income, loan_amnt
+X <- model.matrix(~ credit_score + person_income + loan_amnt + loan_percent_income, data = loan_data)
+
+dim(X)
+length(y)
+head(X)
+```
+
+```{r}
+logistic <- function(z) {
+  1 / (1 + exp(-z))
+}
+
+log_prior <- function(betas, prior_sd=5) {
+  # Sum of logs of independent Normal(0, prior_sd^2)
+  sum(dnorm(betas, mean=0, sd=prior_sd, log=TRUE))
+}
+
+log_lik <- function(betas, X, y) {
+  z <- X %*% betas  # linear predictor
+  p <- logistic(z)
+  eps <- 1e-9
+  ll <- sum(y*log(p + eps) + (1 - y)*log(1 - p + eps))
+  return(ll)
+}
+
+log_posterior <- function(betas, X, y, prior_sd=5) {
+  log_lik(betas, X, y) + log_prior(betas, prior_sd)
+}
+```
+
+
+```{r}
+run_mcmc <- function(X, y, n_iter=5000, prior_sd=5, prop_sd=0.01) {
+  # X: design matrix
+  # y: response vector (0/1)
+  # n_iter: number of MCMC iterations
+  # prior_sd: prior std dev for betas
+  # prop_sd: proposal std dev for random walk
+
+  p <- ncol(X)
+  betas <- rep(0, p)
+  chain <- matrix(NA, nrow=n_iter, ncol=p)
+  colnames(chain) <- paste0("beta_", 0:(p-1))
+
+  # Compute initial log posterior
+  curr_lp <- log_posterior(betas, X, y, prior_sd)
+
+  for (i in seq_len(n_iter)) {
+    betas_star <- betas + rnorm(p, mean=0, sd=prop_sd)
+    
+    # Compute log posterior for proposed betas
+    new_lp <- log_posterior(betas_star, X, y, prior_sd)
+    
+    # Metropolis acceptance ratio
+    r <- exp(new_lp - curr_lp)
+    
+    # Accept or reject
+    if (runif(1) < r) {
+      betas <- betas_star
+      curr_lp <- new_lp
+    }
+    
+    chain[i, ] <- betas
+  }
+
+  return(chain)
+}
+
+
+mcmc_chain <- run_mcmc(X, y, n_iter=10000, prior_sd=5, prop_sd=0.0005)
+
+# Discard burn-in
+burn_in <- 2000
+posterior_samples <- mcmc_chain[(burn_in+1):nrow(mcmc_chain), ]
+
+# Check posterior means for each parameter
+colMeans(posterior_samples)
+colnames(posterior_samples) <- colnames(X)
+```
+
+```{r}
+beta_means <- colMeans(posterior_samples)
+
+beta_median <- apply(posterior_samples, 2, median)
+beta_CI <- apply(posterior_samples, 2, quantile, probs=c(0.025,0.975))
+
+beta_means
+beta_median
+beta_CI
+```
+
+```{r}
+if(!require(coda)) install.packages("coda", repos='http://cran.us.r-project.org')
+library(coda)
+
+chain_mcmc <- as.mcmc(posterior_samples)
+
+traceplot(chain_mcmc)
+acfplot(chain_mcmc)
+```
