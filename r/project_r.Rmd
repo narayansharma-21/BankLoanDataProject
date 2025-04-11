@@ -15,13 +15,13 @@ loan_data <- read.csv("../loan_data.csv", stringsAsFactors = FALSE)
 
 
 # preprocess columns needed
-numeric_cols <- c("credit_score", "person_income", "loan_amnt", "loan_percent_income")
+numeric_cols <- c("credit_score", "person_income", "loan_amnt", "loan_percent_income", "cb_person_cred_hist_length")
 loan_data[ , numeric_cols] <- scale(loan_data[ , numeric_cols])
 
 y <- loan_data$loan_status
 
 # intercept, credit_score, person_income, loan_amnt
-X <- model.matrix(~ credit_score + loan_intent + loan_percent_income + previous_loan_defaults_on_file, 
+X <- model.matrix(~ credit_score + +person_income + loan_amnt + loan_intent + loan_percent_income + cb_person_cred_hist_length, 
                   data = loan_data)
 
 colnames(X)[colnames(X) == "previous_loan_defaults_on_fileYes"] <- "defaults"
@@ -30,7 +30,7 @@ colnames(X)[colnames(X) == "loan_intentHOMEIMPROVEMENT"] <- "intentHOMEIMPROVEME
 colnames(X)[colnames(X) == "loan_intentMEDICAL"] <- "intentMEDICAL"
 colnames(X)[colnames(X) == "loan_intentPERSONAL"] <- "intentPERSONAL"
 colnames(X)[colnames(X) == "loan_intentVENTURE"] <- "intentVENTURE"
-
+  
 dim(X)
 length(y)
 head(X)
@@ -139,7 +139,8 @@ for(i in seq_along(param_names)) {
 }
 ```
 
-```{r}
+```{r, fig.width=12, fig.height=8}
+par(mar = c(3, 3, 3, 3))
 # Determine number of parameters
 num_params <- ncol(mcmc_obj)
 
@@ -196,7 +197,7 @@ cat("Observed default rate:", round(observed_default_rate, 3), "\n")
 cat("Predicted default rate:", round(predicted_default_rate, 3), "\n")
 ```
 ```{r}
-X <- model.matrix(~ credit_score + loan_intent + loan_percent_income, 
+X <- model.matrix(~ credit_score + person_income + loan_amnt + loan_intent +  + loan_percent_income + cb_person_cred_hist_length, 
                   data = loan_data)
 
 colnames(X)[colnames(X) == "previous_loan_defaults_on_fileYes"] <- "defaults"
@@ -211,45 +212,79 @@ length(y)
 head(X)
 ```
 ```{r}
-log_prior <- function(betas, income_prior_mean = 2, income_prior_sd = 1, other_prior_sd = 5) {
-  # Ensure betas is a named vector
-  if(!"loan_percent_income" %in% names(betas)) {
+log_prior <- function(betas, 
+                      income_prior_mean = 4, income_prior_sd = 1, 
+                      credit_prior_mean = -4, credit_prior_sd = 1, 
+                      other_prior_sd = 5) {
+  # Ensure the required coefficients are present
+  if (!("loan_percent_income" %in% names(betas))) {
     stop("The loan_percent_income coefficient is not found in betas.")
+  }
+  if (!("credit_score" %in% names(betas))) {
+    stop("The credit_score coefficient is not found in betas.")
   }
   
   # Strong prior for loan_percent_income
-  lp_income <- dnorm(betas["loan_percent_income"], mean = income_prior_mean, sd = income_prior_sd, log = TRUE)
+  lp_loan_percent <- dnorm(betas["loan_percent_income"], 
+                           mean = income_prior_mean, 
+                           sd = income_prior_sd, 
+                           log = TRUE)
   
-  # Weak priors for the other coefficients (including the intercept and other predictors)
-  other_names <- names(betas)[names(betas) != "loan_percent_income"]
+  # Strong prior for credit_score (negative mean reflects that higher scores reduce default risk)
+  lp_credit <- dnorm(betas["credit_score"], 
+                     mean = credit_prior_mean, 
+                     sd = credit_prior_sd, 
+                     log = TRUE)
+  
+  # Weak priors for all other coefficients (e.g., intercept, person_income, loan_amnt, defaults)
+  other_names <- names(betas)[!(names(betas) %in% c("loan_percent_income", "credit_score"))]
   lp_others <- sum(dnorm(betas[other_names], mean = 0, sd = other_prior_sd, log = TRUE))
   
-  lp_income + lp_others
+  lp_loan_percent + lp_credit + lp_others
 }
 
+# Log-likelihood for logistic regression
 log_lik <- function(betas, X, y) {
   z <- X %*% betas  # linear predictor
   p <- logistic(z)
-  eps <- 1e-9  # small constant to prevent log(0)
+  eps <- 1e-9
   sum(y * log(p + eps) + (1 - y) * log(1 - p + eps))
 }
 
-log_posterior <- function(betas, X, y, income_prior_mean = 2, income_prior_sd = 1, other_prior_sd = 5) {
-  log_lik(betas, X, y) + log_prior(betas, income_prior_mean, income_prior_sd, other_prior_sd)
+# Log-posterior: likelihood + prior
+log_posterior <- function(betas, X, y, 
+                          income_prior_mean = 4, income_prior_sd = 1,
+                          credit_prior_mean = -4, credit_prior_sd = 1,
+                          other_prior_sd = 5) {
+  log_lik(betas, X, y) + 
+    log_prior(betas, income_prior_mean, income_prior_sd,
+              credit_prior_mean, credit_prior_sd, other_prior_sd)
 }
 
-run_mcmc <- function(X, y, n_iter = 10000, income_prior_mean = 2, income_prior_sd = 1, other_prior_sd = 5, prop_sd = 0.01) {
+run_mcmc <- function(X, y, n_iter = 10000, 
+                     income_prior_mean = 4, income_prior_sd = 1,
+                     credit_prior_mean = -4, credit_prior_sd = 1,
+                     other_prior_sd = 5, 
+                     prop_sd = 0.01) {
   p <- ncol(X)
   betas <- rep(0, p)
   names(betas) <- colnames(X)
   chain <- matrix(NA, nrow = n_iter, ncol = p)
   colnames(chain) <- colnames(X)
   
-  curr_lp <- log_posterior(betas, X, y, income_prior_mean, income_prior_sd, other_prior_sd)
+  # Compute initial log-posterior
+  curr_lp <- log_posterior(betas, X, y, 
+                           income_prior_mean, income_prior_sd,
+                           credit_prior_mean, credit_prior_sd,
+                           other_prior_sd)
   
   for (i in seq_len(n_iter)) {
     betas_star <- betas + rnorm(p, mean = 0, sd = prop_sd)
-    new_lp <- log_posterior(betas_star, X, y, income_prior_mean, income_prior_sd, other_prior_sd)
+    names(betas_star) <- colnames(X)  # Retain names for proposed vector
+    new_lp <- log_posterior(betas_star, X, y, 
+                            income_prior_mean, income_prior_sd,
+                            credit_prior_mean, credit_prior_sd,
+                            other_prior_sd)
     r_ratio <- exp(new_lp - curr_lp)
     if (runif(1) < r_ratio) {
       betas <- betas_star
@@ -259,19 +294,19 @@ run_mcmc <- function(X, y, n_iter = 10000, income_prior_mean = 2, income_prior_s
   }
   chain
 }
-
-
-# Run the MCMC sampler
-mcmc_chain <- run_mcmc(X, y, n_iter = 10000, income_prior_mean = 2, income_prior_sd = 1, other_prior_sd = 5, prop_sd = 0.01)
-
+```
+```{r}
+mcmc_chain <- run_mcmc(X, y, n_iter = 10000, 
+                       income_prior_mean = 4, income_prior_sd = 1,
+                       credit_prior_mean = -4, credit_prior_sd = 1,
+                       other_prior_sd = 5, prop_sd = 0.01)
+`
 # Discard burn-in
 burn_in <- 2000
 posterior_samples <- mcmc_chain[(burn_in + 1):nrow(mcmc_chain), ]
-
-# Assign column names for clarity
 colnames(posterior_samples) <- colnames(X)
 
-# Check posterior means for each parameter
+# Display posterior means for each parameter
 colMeans(posterior_samples)
 ```
 
@@ -290,8 +325,8 @@ for(i in seq_along(param_names)) {
        xlab = "Iteration", ylab = "Value")
 }
 ```
-```{r}
-# Determine number of parameters
+```{r, fig.width=12, fig.height=8}
+par(mar = c(3, 3, 3, 3))
 num_params <- ncol(mcmc_obj)
 
 # Set up grid
