@@ -1,0 +1,188 @@
+---
+title: "project_bayes"
+author: "Joshua Yu"
+date: "2025-04-06"
+output: html_document
+---
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(123) # for reproducibility
+```
+
+```{r}
+loan_data <- read.csv("../loan_data.csv", stringsAsFactors = FALSE)
+numeric_cols <- c("credit_score", "person_income", "loan_amnt", "loan_percent_income", "cb_person_cred_hist_length")
+loan_data[ , numeric_cols] <- scale(loan_data[ , numeric_cols])
+y_all <- loan_data$loan_status
+
+X_all <- model.matrix(~ credit_score + person_income + loan_amnt + loan_intent + loan_percent_income + cb_person_cred_hist_length,
+  data = loan_data)
+colnames(X_all)[colnames(X_all) == "loan_intentEDUCATION"] <- "intentEDUCATION"
+colnames(X_all)[colnames(X_all) == "loan_intentHOMEIMPROVEMENT"] <- "intentHOMEIMPROVEMENT"
+colnames(X_all)[colnames(X_all) == "loan_intentMEDICAL"] <- "intentMEDICAL"
+colnames(X_all)[colnames(X_all) == "loan_intentPERSONAL"] <- "intentPERSONAL"
+colnames(X_all)[colnames(X_all) == "loan_intentVENTURE"] <- "intentVENTURE"
+```
+```{r}
+logistic <- function(z) 1 / (1 + exp(-z))
+
+log_lik <- function(betas, X, y) {
+  z <- X %*% betas
+  p <- logistic(z)
+  eps <- 1e-9
+  sum(y * log(p + eps) + (1 - y) * log(1 - p + eps))
+}
+
+log_prior_weak <- function(betas, prior_sd = 5) {
+  sum(dnorm(betas, 0, prior_sd, log = TRUE))
+}
+
+log_prior_strong <- function(betas,
+  income_prior_mean = 4, income_prior_sd = 1,
+  credit_prior_mean = -4, credit_prior_sd = 1,
+  other_prior_sd = 5) {
+  if (!("loan_percent_income" %in% names(betas))) stop("loan_percent_income not found")
+  if (!("credit_score" %in% names(betas))) stop("credit_score not found")
+  lp_loan <- dnorm(betas["loan_percent_income"], income_prior_mean, income_prior_sd, log = TRUE)
+  lp_credit <- dnorm(betas["credit_score"], credit_prior_mean, credit_prior_sd, log = TRUE)
+  other_names <- setdiff(names(betas), c("loan_percent_income", "credit_score"))
+  lp_others <- sum(dnorm(betas[other_names], 0, other_prior_sd, log = TRUE))
+  lp_loan + lp_credit + lp_others
+}
+
+log_post <- function(betas, X, y, prior_fn, ...) {
+  log_lik(betas, X, y) + prior_fn(betas, ...)
+}
+
+run_mcmc <- function(X, y, n_iter = 5000, prop_sd = 0.01, prior_fn, ...) {
+  p <- ncol(X)
+  betas <- rep(0, p); names(betas) <- colnames(X)
+  chain <- matrix(NA, nrow = n_iter, ncol = p)
+  colnames(chain) <- colnames(X)
+  curr_lp <- log_post(betas, X, y, prior_fn, ...)
+  for (i in 1:n_iter) {
+    b_star <- betas + rnorm(p, 0, prop_sd); names(b_star) <- colnames(X)
+    new_lp <- log_post(b_star, X, y, prior_fn, ...)
+    r <- exp(new_lp - curr_lp)
+    if (runif(1) < r) {
+      betas <- b_star; curr_lp <- new_lp
+    }
+    chain[i, ] <- betas
+  }
+  chain
+}
+```
+```{r}
+set.seed(123)
+n <- nrow(X_all)
+idx <- sample(seq_len(n), 0.8 * n)
+X_train <- X_all[idx, ]
+y_train <- y_all[idx]
+X_test <- X_all[-idx, ]
+y_test <- y_all[-idx]
+
+mcmc_weak_train <- run_mcmc(X_train, y_train, n_iter = 5000, prop_sd = 0.01, prior_fn = log_prior_weak, prior_sd = 5)
+burn <- 500
+post_weak_train <- mcmc_weak_train[(burn + 1):5000, ]
+colnames(post_weak_train) <- colnames(X_train)
+
+mcmc_strong_train <- run_mcmc(X_train, y_train, n_iter = 5000, prop_sd = 0.01, prior_fn = log_prior_strong,
+  income_prior_mean = 2, income_prior_sd = 1, credit_prior_mean = -2, credit_prior_sd = 1, other_prior_sd = 5)
+post_strong_train <- mcmc_strong_train[(burn + 1):5000, ]
+colnames(post_strong_train) <- colnames(X_train)
+
+test_pred_weak_mat <- logistic(X_test %*% t(post_weak_train))
+test_pred_weak <- rowMeans(test_pred_weak_mat)
+test_pred_strong_mat <- logistic(X_test %*% t(post_strong_train))
+test_pred_strong <- rowMeans(test_pred_strong_mat)
+```
+```{r}
+if (!require(ROCR)) install.packages("ROCR", repos = "http://cran.us.r-project.org")
+library(ROCR)
+
+pobj_weak <- prediction(test_pred_weak, y_test)
+pweak_perf <- performance(pobj_weak, "tpr", "fpr")
+plot(pweak_perf, col = "blue", main = "Weak - Test ROC")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+auc_weak_test <- performance(pobj_weak, "auc")@y.values[[1]]
+
+pobj_strong <- prediction(test_pred_strong, y_test)
+pstrong_perf <- performance(pobj_strong, "tpr", "fpr")
+plot(pstrong_perf, col = "red", main = "Strong - Test ROC")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+auc_strong_test <- performance(pobj_strong, "auc")@y.values[[1]]
+
+cat("Weak test AUC:", round(auc_weak_test, 3), "\n")
+cat("Strong test AUC:", round(auc_strong_test, 3), "\n")
+
+cutoff <- 0.5
+pred_weak_class <- ifelse(test_pred_weak > cutoff, 1, 0)
+pred_strong_class <- ifelse(test_pred_strong > cutoff, 1, 0)
+
+cat("Conf Mat - Weak:\n")
+print(table(Predicted = pred_weak_class, Actual = y_test))
+cat("Conf Mat - Strong:\n")
+print(table(Predicted = pred_strong_class, Actual = y_test))
+```
+
+```{r}
+mcmc_obj_weak   <- as.mcmc(posterior_samples_weak)
+mcmc_obj_strong <- as.mcmc(posterior_samples_strong)
+
+# TRACEPLOTS (Weak)
+par(mfrow=c(2, ceiling(ncol(mcmc_obj_weak)/2)))
+for (nm in colnames(mcmc_obj_weak)) {
+  plot(mcmc_obj_weak[, nm], type="l", 
+       main=paste("Trace - Weak:", nm),
+       xlab="Iteration", ylab="Value")
+}
+
+# ACF (Weak)
+par(mfrow=c(2, ceiling(ncol(mcmc_obj_weak)/2)))
+for (nm in colnames(mcmc_obj_weak)) {
+  acf(mcmc_obj_weak[, nm], lag.max=50,
+      main=paste("ACF - Weak:", nm))
+}
+
+# TRACEPLOTS (Strong)
+par(mfrow=c(2, ceiling(ncol(mcmc_obj_strong)/2)))
+for (nm in colnames(mcmc_obj_strong)) {
+  plot(mcmc_obj_strong[, nm], type="l", 
+       main=paste("Trace - Strong:", nm),
+       xlab="Iteration", ylab="Value")
+}
+
+# ACF (Strong)
+par(mfrow=c(2, ceiling(ncol(mcmc_obj_strong)/2)))
+for (nm in colnames(mcmc_obj_strong)) {
+  acf(mcmc_obj_strong[, nm], lag.max=50,
+      main=paste("ACF - Strong:", nm))
+}
+par(mfrow=c(1,1))
+```
+
+```{r}
+# Posterior means for each coefficient
+weak_coefs   <- colMeans(posterior_samples_weak)
+strong_coefs <- colMeans(posterior_samples_strong)
+
+cat("Weak model coefficients:\n")
+print(weak_coefs)
+cat("\nStrong model coefficients:\n")
+print(strong_coefs)
+```
+
+```{r}
+
+# Actual default rate:
+obs_default_rate <- mean(y)
+
+# Predicted default rate (Weak):
+pred_default_weak   <- mean(pred_probs_weak)
+# Predicted default rate (Strong):
+pred_default_strong <- mean(pred_probs_strong)
+
+cat("Observed default rate:", round(obs_default_rate, 3), "\n")
+cat("Weak model predicted default rate:", round(pred_default_weak, 3), "\n")
+cat("Strong model predicted default rate:", round(pred_default_strong, 3), "\n")
+```
