@@ -124,10 +124,77 @@ print(table(Predicted = pred_weak_class, Actual = y_test))
 cat("Conf Mat - Strong:\n")
 print(table(Predicted = pred_strong_class, Actual = y_test))
 ```
+```{r}
+k <- 3
+fold_idx <- sample(rep(1:k, length.out = nrow(X_all)))
+
+# Vectors to store AUC results
+auc_weak_cv   <- numeric(k)
+auc_strong_cv <- numeric(k)
+
+burn_cv <- 500
+n_iter_cv <- 5000 
+
+cat("\nPerforming k-fold cross validation:\n")
+
+for (f in seq_len(k)) {
+  # Split into train/test for this fold
+  X_train_cv <- X_all[fold_idx != f, ]
+  y_train_cv <- y_all[fold_idx != f]
+  X_test_cv  <- X_all[fold_idx == f, ]
+  y_test_cv  <- y_all[fold_idx == f]
+  
+  chain_weak_cv <- run_mcmc(
+    X_train_cv, y_train_cv,
+    n_iter      = n_iter_cv,
+    prop_sd     = 0.01,
+    prior_fn    = log_prior_weak,
+    prior_sd    = 5
+  )
+  post_weak_cv <- chain_weak_cv[(burn_cv + 1):n_iter_cv, ]
+  
+  pred_mat_weak_cv <- logistic(X_test_cv %*% t(post_weak_cv))
+  pred_probs_weak_cv <- rowMeans(pred_mat_weak_cv)
+  
+  # Evaluate AUC
+  pred_obj_weak_cv <- prediction(pred_probs_weak_cv, y_test_cv)
+  auc_weak_cv[f] <- performance(pred_obj_weak_cv, "auc")@y.values[[1]]
+  
+  chain_strong_cv <- run_mcmc(
+    X_train_cv, y_train_cv,
+    n_iter      = n_iter_cv,
+    prop_sd     = 0.01,
+    prior_fn    = log_prior_strong,
+    income_prior_mean  = 2,
+    income_prior_sd    = 1,
+    credit_prior_mean  = -2,
+    credit_prior_sd    = 1,
+    other_prior_sd     = 5
+  )
+  post_strong_cv <- chain_strong_cv[(burn_cv + 1):n_iter_cv, ]
+  
+  # Predict
+  pred_mat_strong_cv <- logistic(X_test_cv %*% t(post_strong_cv))
+  pred_probs_strong_cv <- rowMeans(pred_mat_strong_cv)
+  
+  # Evaluate AUC
+  pred_obj_strong_cv <- prediction(pred_probs_strong_cv, y_test_cv)
+  auc_strong_cv[f] <- performance(pred_obj_strong_cv, "auc")@y.values[[1]]
+  
+  cat("Fold:", f,
+      "| Weak AUC =", round(auc_weak_cv[f], 3),
+      "| Strong AUC =", round(auc_strong_cv[f], 3), "\n")
+}
+
+cat("\nMean Weak CV AUC =", round(mean(auc_weak_cv), 3), "\n")
+cat("Mean Strong CV AUC =", round(mean(auc_strong_cv), 3), "\n")
+```
+
 
 ```{r}
-mcmc_obj_weak   <- as.mcmc(posterior_samples_weak)
-mcmc_obj_strong <- as.mcmc(posterior_samples_strong)
+library(coda)
+mcmc_obj_weak <- as.mcmc(post_weak_train)
+mcmc_obj_strong <- as.mcmc(post_strong_train)
 
 # TRACEPLOTS (Weak)
 par(mfrow=c(2, ceiling(ncol(mcmc_obj_weak)/2)))
@@ -162,25 +229,47 @@ par(mfrow=c(1,1))
 ```
 
 ```{r}
-# Posterior means for each coefficient
-weak_coefs   <- colMeans(posterior_samples_weak)
-strong_coefs <- colMeans(posterior_samples_strong)
+weak_coefs <- colMeans(post_weak_train)
+weak_sds   <- apply(post_weak_train, 2, sd)
+weak_ci    <- t(apply(post_weak_train, 2, quantile, probs = c(0.025, 0.975)))
 
-cat("Weak model coefficients:\n")
-print(weak_coefs)
-cat("\nStrong model coefficients:\n")
-print(strong_coefs)
+weak_summary <- data.frame(
+  Coefficient = names(weak_coefs),
+  Mean = round(weak_coefs, 4),
+  SD = round(weak_sds, 4),
+  CI_Lower = round(weak_ci[,1], 4),
+  CI_Upper = round(weak_ci[,2], 4)
+)
+
+cat("Weak model coefficients with uncertainty:\n")
+print(weak_summary)
 ```
 
 ```{r}
+strong_coefs <- colMeans(post_strong_train)
+strong_sds   <- apply(post_strong_train, 2, sd)
+strong_ci    <- t(apply(post_strong_train, 2, quantile, probs = c(0.025, 0.975)))
 
-# Actual default rate:
-obs_default_rate <- mean(y)
+strong_summary <- data.frame(
+  Coefficient = names(strong_coefs),
+  Mean = round(strong_coefs, 4),
+  SD = round(strong_sds, 4),
+  CI_Lower = round(strong_ci[,1], 4),
+  CI_Upper = round(strong_ci[,2], 4)
+)
 
-# Predicted default rate (Weak):
-pred_default_weak   <- mean(pred_probs_weak)
-# Predicted default rate (Strong):
-pred_default_strong <- mean(pred_probs_strong)
+print("\nStrong model coefficients with uncertainty:\n")
+print(strong_summary)
+```
+
+```{r}
+# Actual default rate
+obs_default_rate <- mean(y_all)
+
+# Predicted default rate Weak
+pred_default_weak <- mean(test_pred_weak_mat)
+# Predicted default rate Strong
+pred_default_strong <- mean(test_pred_strong_mat)
 
 cat("Observed default rate:", round(obs_default_rate, 3), "\n")
 cat("Weak model predicted default rate:", round(pred_default_weak, 3), "\n")
