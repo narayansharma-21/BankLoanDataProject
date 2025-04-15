@@ -3,6 +3,9 @@
 ## Overview
 This project aims to predict whether a loan will be repaid successfully (loan_status = 1) or if the applicant will default (loan_status = 0) using a feed-forward neural network (MLP). The dataset consists of various applicant and loan-related features. Additionally, an R-based Bayesian statistics model is included to predict loan amounts.
 
+## Website
+Using Streamlit, we created a [website](https://narayansharma-21-bank-pythonweb-appinteractive-dashboard-xcwmxu.streamlit.app/) to show the functionality of the different MLPs and the relationship between each feature within the context of each experiment. Feel free to try a variety of combinations! 
+
 ## Setup Instructions
 
 ### Python Environment
@@ -45,6 +48,4 @@ The dataset includes the following features:
 
 ## Contributors
 - **Narayan Sharma, Joshua Yu**
-
-For any questions, reach out via [GitHub](https://github.com/narayansharma-21) or [LinkedIn](https://www.linkedin.com/in/ns324/).
 
