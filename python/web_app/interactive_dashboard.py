@@ -8,7 +8,7 @@ from torch import nn
 # ==== Load Dataset ====
 @st.cache_data
 def load_data():
-    df = pd.read_csv("../../loan_data.csv")  # update to your filename
+    df = pd.read_csv("loan_data.csv")  # update to your filename
     return df
 
 # ==== Model Class (MLP) ====
@@ -117,9 +117,9 @@ def dashboard_main():
     df[numerical_features] = scaler.fit_transform(df[numerical_features])
 
     model_options = {
-        "Mix (Best)": ("../models/loan_fnn_model_mix.pth", LoanNN_2),
-        "Initial Model": ("../models/loan_fnn_model.pth", LoanNN),
-        "Single Layer": ("../models/loan_fnn_model_single_layer.pth", LoanNN_3)
+        "Mix (Best)": ("loan_fnn_model_mix.pth", LoanNN_2),
+        "Initial Model": ("loan_fnn_model.pth", LoanNN),
+        "Single Layer": ("loan_fnn_model_single_layer.pth", LoanNN_3)
     }
 
     feature_columns = categorical_features + numerical_features
